@@ -13,13 +13,12 @@
 
 ### Contributing
 Assuming you have cloned and modified the master branch
-1. Add any new files and commit the changes by runnning
+1. Add any new files by running the following command from the top level directory
+
 `git add .`
+2. Commit the changes to files track on your local machine
+
 `git commit -m  "commit message"`
-2. Fork the repo by clicking on the Fork button
-3. Provide the location of the forked repository to git
-`git remote add my_fork https://github.com/URL/of/forked/repo.git`
-4. Push to your forked repo
-`git push -u my_fork master`
+3. Push to git hub
 
-
+`git push -u origin master`
