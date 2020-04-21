@@ -13,12 +13,16 @@
 
 ### Contributing
 Assuming you have cloned and modified the master branch
+
 1. Add any new files by running the following command from the top level directory
 
-`git add .`
+   `git add .`
+
 2. Commit the changes to files track on your local machine
 
-`git commit -m  "commit message"`
+   `git commit -m  "commit message"`
+
 3. Push to git hub
 
-`git push -u origin master`
+   `git push -u origin master`
+
