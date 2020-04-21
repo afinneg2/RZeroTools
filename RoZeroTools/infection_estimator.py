@@ -29,7 +29,6 @@ class Infect_Date_Estimator(object):
             raise ValueError("Code only supports models with transmission period beginning 1 d after infection")
         self.trans_period = trans_period
         
-        self.infect_frac_cas = None
         self.infect_count_cas = None
         self.infect_count_all = None
 
@@ -47,12 +46,14 @@ class Infect_Date_Estimator(object):
                                       )
         event_series = pd.concat( [prepend_series, event_series ] ) ## prepend dates
         return event_series
-
     @property
     def conditional_prob_mat(self,):
         cond_probs = self._make_cond_prob_mat(self.like_func, self.n_days, given_obsCas=True)
-        #cond_probs =  pd.DataFrame( data= cond_probs, index =  "" , columns = "" ) 
+        cond_probs =  pd.DataFrame( data= cond_probs, 
+                                    index = self.event_series.index ,
+                                    columns = self.event_series.index.shift(-1*self._like_func_Nzero, freq='D') ) 
         return cond_probs
+
     @property
     def log_penalty_mats(self):
         M1 , M2= Infect_Date_Estimator._make_log_penalty_mats(self.n_days, window_size=self.trans_period[1]-1, like_func = self.like_func)
@@ -69,20 +70,55 @@ class Infect_Date_Estimator(object):
                                             penalty = smooth_penalty,
                                             trans_period= self.trans_period)
         
-        ## shift index
-        p_i_index = self.event_series.index.shift(-1*self._like_func_Nzero, freq='D')
-       
+        ## Organize results
+        p_i_index = self.event_series.index.shift(-1*self._like_func_Nzero, freq='D')  ### shift index for infecation dates
         self.p_i_given_obsCas = pd.Series( index= p_i_index,  data = p_i_given_obsCas)
-        self.N_i_obsCas_expected =  self.p_i_given_obsCas*self.N_obsCas
+        self.N_i_obsCas_expected = self.p_i_given_obsCas*self.N_obsCas
         
         self.p_i, self._p_i_full, self._frac_expected = self._rescale_p_i(self.p_i_given_obsCas, self.like_func, self.n_days)
         self._N_cas_full = self.N_obsCas/(1. - self._frac_expected) 
         self.N_cas = self._N_cas_full*(self._p_i_full.loc[self.p_i.index].sum())
         
-        # self.p_e = self._calc_p_e(self.p_i.copy(), self.like_func.copy() )
-        # self.N_i_cas_expected = self.p_e * self.N_cas
-        return self.p_i_given_obsCas, self.p_i, #self.N_i_cas_expected
+        self.p_e = self._calc_p_e(self.p_i.copy(), self.like_func.copy() )
+        self.N_i_cas_expected = self.p_e * self.N_cas
+        return self.p_i_given_obsCas, self.p_i, self.N_i_cas_expected
      
+    def choose_penalty(self):
+        return None
+
+    @staticmethod
+    def _calc_p_e(p_i, like_func,):
+        cond_probs = Infect_Date_Estimator._make_cond_prob_mat(like_func, len(p_i), given_obsCas = False)
+        p_e = cond_probs@(p_i.values)
+        
+        p_e = pd.Series(data = p_e)
+        p_e_index = p_i.index.copy()
+        p_e_index = p_e_index.append( p_e_index[-1] + pd.timedelta_range( start = timedelta(days = 1), 
+                                                                        end = timedelta(days = len(like_func[np.argmax(like_func>0.) :]) -1), 
+                                                                        freq = 'd'  ) 
+                                     )
+        p_e_index = p_e_index.shift(np.argmax(like_func>0),  freq='D')  ### shift index to account leading 0 of conditional prob p(death = i | infect = j)
+        p_e.index= p_e_index 
+        return p_e
+
+
+    @staticmethod
+    def _rescale_p_i(p_i_given_obsCas, like_func, n_days, ):
+        """
+        Calculates probabilites of infection on certain day from probabilies of infection on that day condition on observed death.
+        Also Calculates the fraction of infections that have occurred so far for which casualties are expected.
+        """
+        like_func = like_func[np.argmax(like_func>0.) :].copy()
+        p_i_full = pd.Series(index = p_i_given_obsCas.index, 
+                        data = [ x/np.sum(like_func[:n_days-d]) for d,x in enumerate(p_i_given_obsCas.values) ])
+        frac_expected = 1. - 1./p_i_full.sum()
+        p_i_full = p_i_full/p_i_full.sum()
+        
+        d_truncate = np.argmax(np.cumsum(like_func) > 0.05)
+        print(d_truncate)
+        p_i =  p_i_full.iloc[:-1*d_truncate]/ p_i_full.iloc[:-1*d_truncate].sum()
+        return p_i, p_i_full, frac_expected
+    
     @staticmethod
     def _make_cond_prob_mat(like_func, n_days, given_obsCas= True ):
         """
@@ -119,7 +155,7 @@ class Infect_Date_Estimator(object):
                     if j < i+window_size:
                         m2[i,j] = 1./np.sum(like_func[:size-j])
                     else:
-                         m2[i,j] = 0.
+                        m2[i,j] = 0.
                 else:
                     m2[i,j] = 0.
         return m1, m2
@@ -181,8 +217,8 @@ class Infect_Date_Estimator(object):
                                            constraints = sp.optimize.LinearConstraint( np.ones( (1,len(soln)), dtype = float) ,
                                                                                        lb = 1., ub = 1. )
                                            )
-            print(opt_res.success)
-            print(opt_res.message)
+            if not opt_res.success:
+                raise ValueError("sp.optimize.minimize failed to converge with message:\n{}".format(opt_res.message) )
         return opt_res.x, opt_res.fun
     
     def est_transmission_rate(self, min_infected_frac = 0.0001 ):
@@ -198,39 +234,7 @@ class Infect_Date_Estimator(object):
             self.transmission_rates.iloc[idx - est_start_idx] = infected_counts.iloc[idx] / ( 
                                                             infected_counts.iloc[idx-self.trans_period[1]+1 : idx-self.trans_period[0]+1].sum())
         return self.transmission_rates.copy()
-
-    
-    @staticmethod
-    def _rescale_p_i(p_i_given_obsCas, like_func, n_days, ):
-        """
-        Calculates probabilites of infection on certain day from probabilies of infection on that day condition on observed death.
-        Also Calculates the fraction of infections that have occurred so far for which casualties are expected.
-        """
-        like_func = like_func[np.argmax(like_func>0.) :].copy()
-        p_i_full = pd.Series(index = p_i_given_obsCas.index, 
-                        data = [ x/np.sum(like_func[:n_days-d]) for d,x in enumerate(p_i_given_obsCas.values) ])
-        frac_expected = 1. - 1./p_i_full.sum()
-        p_i_full = p_i_full/p_i_full.sum()
-        
-        d_truncate = np.argmax(np.cumsum(like_func) > 0.1)
-        print(d_truncate)
-        p_i =  p_i_full.iloc[:-1*d_truncate]/ p_i_full.iloc[:-1*d_truncate].sum()
-        return p_i, p_i_full, frac_expected
  
-    @staticmethod
-    def _calc_p_e(p_i, like_func,):
-        cond_probs = Infect_Date_Estimator._make_cond_prob_mat(like_func, len(p_i), given_obsCas = False)
-        p_e = np.dot(cond_probs , p_i.values[:,None]).squeeze()
-        
-        p_e = pd.Series(data = p_e)
-        p_e_index = p_i.index.copy()
-        p_e_index = p_e_index.append( p_e_index[-1] + pd.timedelta_range( start = timedelta(days = 1), 
-                                                                        end = timedelta(days = len(like_func) -1), 
-                                                                        freq = 'd'  ) 
-                                     )
-        p_e.index= p_e_index 
-        return p_e
-
     @staticmethod
     def _make_d2_mat(size):
         """
