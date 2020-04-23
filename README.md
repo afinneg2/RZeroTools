@@ -26,3 +26,4 @@ Assuming you have cloned and modified the master branch
 
    `git push -u origin master`
 
+this is a test
