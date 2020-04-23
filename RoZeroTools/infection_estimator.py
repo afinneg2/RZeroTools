@@ -63,14 +63,15 @@ class Infect_Date_Estimator(object):
         D1 = Infect_Date_Estimator._make_d1_mat( self.n_days-(self.trans_period[1] -1) )
         return D1
 
-    def est_casualty_infect_dates(self, d_preceeding = None, smooth_penalty =None  ): 
+    def est_casualty_infect_dates(self, smooth_penalty =None  ): 
 
-        p_i_given_obsCas, loss  = self._fit( event_counts = self.event_series.values.copy(), 
-                                            like_func = self.like_func,
-                                            penalty = smooth_penalty,
-                                            trans_period= self.trans_period)
-        
+        p_i_given_obsCas, loss ,least_sq_loss = self._fit( event_counts = self.event_series.values.copy(), 
+                                                        like_func = self.like_func,
+                                                        penalty = smooth_penalty,
+                                                        trans_period= self.trans_period)
+                    
         ## Organize results
+        self.least_sq_loss = least_sq_loss
         p_i_index = self.event_series.index.shift(-1*self._like_func_Nzero, freq='D')  ### shift index for infecation dates
         self.p_i_given_obsCas = pd.Series( index= p_i_index,  data = p_i_given_obsCas)
         self.N_i_obsCas_expected = self.p_i_given_obsCas*self.N_obsCas
@@ -81,10 +82,72 @@ class Infect_Date_Estimator(object):
         
         self.p_e = self._calc_p_e(self.p_i.copy(), self.like_func.copy() )
         self.N_i_cas_expected = self.p_e * self.N_cas
-        return self.p_i_given_obsCas, self.p_i, self.N_i_cas_expected
-     
-    def choose_penalty(self):
-        return None
+        return self.p_i_given_obsCas, self.p_i, self.N_i_cas_expected,  least_sq_loss
+
+    @staticmethod
+    def _resample_events( event_series, n = 20 ):
+        day_index = np.array( [ (x-event_series.index[0]).days for x in event_series.index ] )
+        sample_size = int(event_series.sum())
+        resampled = np.random.choice(day_index,
+                                    size= n*sample_size ,
+                                    p = event_series.values / event_series.values.sum()  
+                                    )
+        resampled_df = pd.DataFrame( index = event_series.index, 
+                                    columns = list(range(n)),
+                                data = 0.)
+        for iter_idx in range(n):
+            resampled_tmp = resampled[iter_idx*sample_size: (iter_idx+1)*sample_size]
+            resampled_df.iloc[:,iter_idx] =np.array([ np.sum(resampled_tmp == x) for x in day_index ])
+        return  resampled_df
+
+
+    def choose_penalty(self, penalties_test, n_boot = 20):
+        """[summary]
+        
+        Arguments:
+            penalties_test {iterable} -- iterable of floats 
+        
+        Keyword Arguments:
+            n_boot {int} -- [description] (default: {20})
+        
+        Returns:
+            [type] -- [description]
+        """
+
+        self.penalties_tested = penalties_test
+        p_i_index = self.event_series.index.shift(-1*self._like_func_Nzero, freq='D')  ### shift index for infecation dates
+        p_i_from_boot = pd.DataFrame( index = p_i_index, 
+                                    columns = pd.MultiIndex.from_product( [ ["{:.3e}".format(p) for p in penalties_test ], list(range(n_boot)) ] ) ,
+                                    data = 0., 
+                                    dtype = float)
+        losses_from_boot = pd.Series(index = pd.MultiIndex.from_product( [ ["{:.3e}".format(p) for p in penalties_test ], list(range(n_boot)) ] ) ,
+                                    data = 0., 
+                                    dtype = float) 
+        ## Fit to bootstrap samples
+        events_resampled = self._resample_events(self.event_series.copy(), n = n_boot)
+
+        for p in penalties_test:
+            for boot_idx in range(n_boot):
+                p_i_given_obsCas, loss ,least_sq_loss = self._fit( event_counts =  events_resampled.iloc[:, boot_idx].values.copy(), 
+                                                                    like_func = self.like_func,
+                                                                    penalty = p,
+                                                                    trans_period= self.trans_period)
+                p_i_given_obsCas = pd.Series( index= p_i_index,  data = p_i_given_obsCas)
+                p_i, _ ,_ = self._rescale_p_i(p_i_given_obsCas, self.like_func, self.n_days)
+                p_i_from_boot.loc[: , ("{:.3e}".format(p), boot_idx)] = p_i
+                losses_from_boot.loc[("{:.3e}".format(p), boot_idx)] = least_sq_loss 
+        ## Compute variance of parameters and mean loss across bootstram samples
+        self.p_i_vs_penalty = p_i_from_boot.groupby(axis = 1, level = 0
+                                        ).apply( lambda x: pd.concat([x.mean(axis = 1), x.var(axis = 1)], keys=["mean", "var"]) 
+                                             ).unstack( level = 0)
+        objective_vs_penalty = losses_from_boot.groupby(level = 0).mean()
+        objective_vs_penalty.name = "mean_objective"
+        self.objective_vs_penalty =  objective_vs_penalty.to_frame()
+        self.objective_vs_penalty["var"] = self.p_i_vs_penalty.loc[: , (slice(None) , "var") ].sum(axis = 0).droplevel(1)
+        
+        return  self.p_i_vs_penalty ,  self.objective_vs_penalty
+
+
 
     @staticmethod
     def _calc_p_e(p_i, like_func,):
@@ -217,9 +280,10 @@ class Infect_Date_Estimator(object):
                                            constraints = sp.optimize.LinearConstraint( np.ones( (1,len(soln)), dtype = float) ,
                                                                                        lb = 1., ub = 1. )
                                            )
+            least_sq_loss = np.sum( (A@opt_res.x - b)**2)
             if not opt_res.success:
                 raise ValueError("sp.optimize.minimize failed to converge with message:\n{}".format(opt_res.message) )
-        return opt_res.x, opt_res.fun
+        return opt_res.x, opt_res.fun, least_sq_loss
     
     def est_transmission_rate(self, min_infected_frac = 0.0001 ):
         """
