@@ -3,17 +3,18 @@
 import sys
 import time
 
-sys.stdout.write("8==>")
-sys.stdout.flush()
+def main():
+    sys.stdout.write("8==>")
+    sys.stdout.flush()
 
 
-for i in range(10):
+    for i in range(10):
         time.sleep(0.2)
         sys.stdout.write("\b\b")
         sys.stdout.write("==>")
         sys.stdout.flush()
 
-for i in range(10):
+    for i in range(10):
         time.sleep(0.2)
         sys.stdout.write("\b\b")
         sys.stdout.write(">")
@@ -23,22 +24,23 @@ for i in range(10):
         sys.stdout.write("=>")
         sys.stdout.flush()
 
-for i in range(5):
+    for i in range(5):
         sys.stdout.write("-")
         sys.stdout.flush()
         time.sleep(0.2)
         
-sys.stdout.write("X")
-sys.stdout.flush()
-time.sleep(0.2)
-sys.stdout.write("\b"*6)
-sys.stdout.write(" "*5 + "|")
-sys.stdout.flush()
-time.sleep(0.2)
-sys.stdout.write("\b")
-sys.stdout.write( "_")
-sys.stdout.flush()
-time.sleep(1)
-sys.stdout.write("\n")
+    sys.stdout.write("X")
+    sys.stdout.flush()
+    time.sleep(0.2)
+    sys.stdout.write("\b"*6)
+    sys.stdout.write(" "*5 + "|")
+    sys.stdout.flush()
+    time.sleep(0.2)
+    sys.stdout.write("\b")
+    sys.stdout.write( "_")
+    sys.stdout.flush()
+    time.sleep(1)
+    sys.stdout.write("\n")
+    return None
 
 
