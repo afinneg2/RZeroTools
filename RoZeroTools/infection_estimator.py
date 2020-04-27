@@ -1,12 +1,14 @@
 
 import numpy as np 
 import pandas as pd 
-import matplotlib.pyplot as plt  
-import sys
 import scipy as sp
-import cvxpy as cp
+# import cvxpy as cp
 from datetime import timedelta
+from sklearn.mixture import GaussianMixture
+import progressbar
 
+import matplotlib.colors as colors
+import matplotlib.pyplot as plt  
 
 
 
@@ -31,21 +33,8 @@ class Infect_Date_Estimator(object):
         
         self.infect_count_cas = None
         self.infect_count_all = None
+        self.p_i_from_boot = None
 
-    @staticmethod
-    def _preprocess_event_series(event_series, like_func):
-        event_series = event_series.sort_index().copy()
-        date_earliest = event_series.index[0]
-        d_preceeding  = len(like_func[np.argmax( like_func > 0.): ]) - 1
-        prepend_series = pd.Series(index =  date_earliest + \
-                                               pd.timedelta_range(start = timedelta(days = -1*d_preceeding), 
-                                                                    end = timedelta(days = -1), 
-                                                                    freq = 'd'
-                                                                ),
-                                        data = 0.
-                                      )
-        event_series = pd.concat( [prepend_series, event_series ] ) ## prepend dates
-        return event_series
     @property
     def conditional_prob_mat(self,):
         cond_probs = self._make_cond_prob_mat(self.like_func, self.n_days, given_obsCas=True)
@@ -63,15 +52,29 @@ class Infect_Date_Estimator(object):
         D1 = Infect_Date_Estimator._make_d1_mat( self.n_days-(self.trans_period[1] -1) )
         return D1
 
+    @staticmethod
+    def _preprocess_event_series(event_series, like_func):
+        event_series = event_series.sort_index().copy()
+        date_earliest = event_series.index[0]
+        d_preceeding  = len(like_func[np.argmax( like_func > 0.): ]) - 1
+        prepend_series = pd.Series(index =  date_earliest + \
+                                               pd.timedelta_range(start = timedelta(days = -1*d_preceeding), 
+                                                                    end = timedelta(days = -1), 
+                                                                    freq = 'd'
+                                                                ),
+                                        data = 0.
+                                      )
+        event_series = pd.concat( [prepend_series, event_series ] ) ## prepend dates
+        return event_series
+
     def est_casualty_infect_dates(self, smooth_penalty =None  ): 
 
-        p_i_given_obsCas, loss ,least_sq_loss = self._fit( event_counts = self.event_series.values.copy(), 
+        p_i_given_obsCas, loss , _ = self._fit( event_counts = self.event_series.values.copy(), 
                                                         like_func = self.like_func,
                                                         penalty = smooth_penalty,
                                                         trans_period= self.trans_period)
                     
         ## Organize results
-        self.least_sq_loss = least_sq_loss
         p_i_index = self.event_series.index.shift(-1*self._like_func_Nzero, freq='D')  ### shift index for infecation dates
         self.p_i_given_obsCas = pd.Series( index= p_i_index,  data = p_i_given_obsCas)
         self.N_i_obsCas_expected = self.p_i_given_obsCas*self.N_obsCas
@@ -82,106 +85,8 @@ class Infect_Date_Estimator(object):
         
         self.p_e = self._calc_p_e(self.p_i.copy(), self.like_func.copy() )
         self.N_i_cas_expected = self.p_e * self.N_cas
-        return self.p_i_given_obsCas, self.p_i, self.N_i_cas_expected,  least_sq_loss
+        return self.p_i_given_obsCas, self.p_i, self.N_i_cas_expected 
 
-    @staticmethod
-    def _resample_events( event_series, n = 20 ):
-        day_index = np.array( [ (x-event_series.index[0]).days for x in event_series.index ] )
-        sample_size = int(event_series.sum())
-        resampled = np.random.choice(day_index,
-                                    size= n*sample_size ,
-                                    p = event_series.values / event_series.values.sum()  
-                                    )
-        resampled_df = pd.DataFrame( index = event_series.index, 
-                                    columns = list(range(n)),
-                                data = 0.)
-        for iter_idx in range(n):
-            resampled_tmp = resampled[iter_idx*sample_size: (iter_idx+1)*sample_size]
-            resampled_df.iloc[:,iter_idx] =np.array([ np.sum(resampled_tmp == x) for x in day_index ])
-        return  resampled_df
-
-
-    def choose_penalty(self, penalties_test, n_boot = 20):
-        """[summary]
-        
-        Arguments:
-            penalties_test {iterable} -- iterable of floats 
-        
-        Keyword Arguments:
-            n_boot {int} -- [description] (default: {20})
-        
-        Returns:
-            [type] -- [description]
-        """
-
-        self.penalties_tested = penalties_test
-        p_i_index = self.event_series.index.shift(-1*self._like_func_Nzero, freq='D')  ### shift index for infecation dates
-        p_i_from_boot = pd.DataFrame( index = p_i_index, 
-                                    columns = pd.MultiIndex.from_product( [ ["{:.3e}".format(p) for p in penalties_test ], list(range(n_boot)) ] ) ,
-                                    data = 0., 
-                                    dtype = float)
-        losses_from_boot = pd.Series(index = pd.MultiIndex.from_product( [ ["{:.3e}".format(p) for p in penalties_test ], list(range(n_boot)) ] ) ,
-                                    data = 0., 
-                                    dtype = float) 
-        ## Fit to bootstrap samples
-        events_resampled = self._resample_events(self.event_series.copy(), n = n_boot)
-
-        for p in penalties_test:
-            for boot_idx in range(n_boot):
-                p_i_given_obsCas, loss ,least_sq_loss = self._fit( event_counts =  events_resampled.iloc[:, boot_idx].values.copy(), 
-                                                                    like_func = self.like_func,
-                                                                    penalty = p,
-                                                                    trans_period= self.trans_period)
-                p_i_given_obsCas = pd.Series( index= p_i_index,  data = p_i_given_obsCas)
-                p_i, _ ,_ = self._rescale_p_i(p_i_given_obsCas, self.like_func, self.n_days)
-                p_i_from_boot.loc[: , ("{:.3e}".format(p), boot_idx)] = p_i
-                losses_from_boot.loc[("{:.3e}".format(p), boot_idx)] = least_sq_loss 
-        ## Compute variance of parameters and mean loss across bootstram samples
-        self.p_i_vs_penalty = p_i_from_boot.groupby(axis = 1, level = 0
-                                        ).apply( lambda x: pd.concat([x.mean(axis = 1), x.var(axis = 1)], keys=["mean", "var"]) 
-                                             ).unstack( level = 0)
-        objective_vs_penalty = losses_from_boot.groupby(level = 0).mean()
-        objective_vs_penalty.name = "mean_objective"
-        self.objective_vs_penalty =  objective_vs_penalty.to_frame()
-        self.objective_vs_penalty["var"] = self.p_i_vs_penalty.loc[: , (slice(None) , "var") ].sum(axis = 0).droplevel(1)
-        
-        return  self.p_i_vs_penalty ,  self.objective_vs_penalty
-
-
-
-    @staticmethod
-    def _calc_p_e(p_i, like_func,):
-        cond_probs = Infect_Date_Estimator._make_cond_prob_mat(like_func, len(p_i), given_obsCas = False)
-        p_e = cond_probs@(p_i.values)
-        
-        p_e = pd.Series(data = p_e)
-        p_e_index = p_i.index.copy()
-        p_e_index = p_e_index.append( p_e_index[-1] + pd.timedelta_range( start = timedelta(days = 1), 
-                                                                        end = timedelta(days = len(like_func[np.argmax(like_func>0.) :]) -1), 
-                                                                        freq = 'd'  ) 
-                                     )
-        p_e_index = p_e_index.shift(np.argmax(like_func>0),  freq='D')  ### shift index to account leading 0 of conditional prob p(death = i | infect = j)
-        p_e.index= p_e_index 
-        return p_e
-
-
-    @staticmethod
-    def _rescale_p_i(p_i_given_obsCas, like_func, n_days, ):
-        """
-        Calculates probabilites of infection on certain day from probabilies of infection on that day condition on observed death.
-        Also Calculates the fraction of infections that have occurred so far for which casualties are expected.
-        """
-        like_func = like_func[np.argmax(like_func>0.) :].copy()
-        p_i_full = pd.Series(index = p_i_given_obsCas.index, 
-                        data = [ x/np.sum(like_func[:n_days-d]) for d,x in enumerate(p_i_given_obsCas.values) ])
-        frac_expected = 1. - 1./p_i_full.sum()
-        p_i_full = p_i_full/p_i_full.sum()
-        
-        d_truncate = np.argmax(np.cumsum(like_func) > 0.05)
-        print(d_truncate)
-        p_i =  p_i_full.iloc[:-1*d_truncate]/ p_i_full.iloc[:-1*d_truncate].sum()
-        return p_i, p_i_full, frac_expected
-    
     @staticmethod
     def _make_cond_prob_mat(like_func, n_days, given_obsCas= True ):
         """
@@ -200,6 +105,37 @@ class Infect_Date_Estimator(object):
             for j in range(n_days):
                 cond_probs[j:j+len(like_func_nonzero),j] = like_func_nonzero
         return cond_probs
+
+    @staticmethod
+    def _calc_p_e(p_i, like_func,):
+        cond_probs = Infect_Date_Estimator._make_cond_prob_mat(like_func, len(p_i), given_obsCas = False)
+        p_e = cond_probs@(p_i.values)
+        
+        p_e = pd.Series(data = p_e)
+        p_e_index = p_i.index.copy()
+        p_e_index = p_e_index.append( p_e_index[-1] + pd.timedelta_range( start = timedelta(days = 1), 
+                                                                        end = timedelta(days = len(like_func[np.argmax(like_func>0.) :]) -1), 
+                                                                        freq = 'd'  ) 
+                                     )
+        p_e_index = p_e_index.shift(np.argmax(like_func>0),  freq='D')  ### shift index to account leading 0 of conditional prob p(death = i | infect = j)
+        p_e.index= p_e_index 
+        return p_e
+
+    @staticmethod
+    def _rescale_p_i(p_i_given_obsCas, like_func, n_days, ):
+        """
+        Calculates probabilites of infection on certain day from probabilies of infection on that day condition on observed death.
+        Also Calculates the fraction of infections that have occurred so far for which casualties are expected.
+        """
+        like_func = like_func[np.argmax(like_func>0.) :].copy()
+        p_i_full = pd.Series(index = p_i_given_obsCas.index, 
+                        data = [ x/np.sum(like_func[:n_days-d]) for d,x in enumerate(p_i_given_obsCas.values) ])
+        frac_expected = 1. - 1./p_i_full.sum()
+        p_i_full = p_i_full/p_i_full.sum()
+        
+        d_truncate = np.argmax(np.cumsum(like_func) > 0.05)
+        p_i =  p_i_full.iloc[:-1*d_truncate]/ p_i_full.iloc[:-1*d_truncate].sum()
+        return p_i, p_i_full, frac_expected
     
     @staticmethod
     def _make_log_penalty_mats(size, window_size, like_func):
@@ -226,6 +162,56 @@ class Infect_Date_Estimator(object):
 
     @staticmethod
     def _fit(event_counts, like_func, trans_period , penalty = None ):
+        """
+        
+        """
+        n_days = len(event_counts)
+        cond_probs = Infect_Date_Estimator._make_cond_prob_mat(like_func, n_days)
+        d2=Infect_Date_Estimator._make_d2_mat(n_days)
+
+        A = cond_probs.copy()
+        b=  event_counts
+        M1 ,M2 = Infect_Date_Estimator._make_log_penalty_mats(n_days, window_size=trans_period[1]-1, like_func = like_func)
+        D = Infect_Date_Estimator._make_d1_mat( n_days-(trans_period[1] -1) )
+
+        p_count = 0.00005
+        def obj_func(x, A, b, M1, M2, D, penalty):
+            obj = -b@np.log( np.abs( A@x + p_count) ) + \
+                    penalty*np.sum(( D@( np.log(np.abs(M1@x + p_count )) - np.log(np.abs(M2@x + p_count)) )
+                                    )**2 )
+            return obj
+
+        def jac_func(x,A, b, M1, M2, D, penalty):
+            A_x = A@x
+            M1_x = M1@x
+            M2_x = M2@x
+            jac_ls = -b@np.diag( np.sign(A_x+p_count)/np.abs(A_x+p_count))@A   
+            jac_pen = ( np.log(np.abs(M1_x+p_count)) - np.log(np.abs(M2_x+p_count))
+                                    )@(np.transpose(D)@D
+                                        )@( np.diag(np.sign(M1_x+p_count)/np.abs(M1_x+p_count))@M1 - \
+                                            np.diag(np.sign(M2_x+p_count)/np.abs(M2_x+p_count))@M2 )
+
+            return jac_ls + 2.*penalty*jac_pen
+
+        opt_res =  sp.optimize.minimize( fun = obj_func, 
+                                        x0 = np.ones(A.shape[1])/A.shape[1] , 
+                                        jac = jac_func , 
+                                        args = (A, b, M1, M2, D, penalty),
+                                        method = 'trust-constr',
+                                        bounds = [(0.,1.)]* A.shape[1] ,
+                                        constraints = sp.optimize.LinearConstraint( np.ones( (1,A.shape[1]), dtype = float) ,
+                                                                                    lb = 1., ub = 1. )
+                                        )
+        if not opt_res.success:
+                raise ValueError("sp.optimize.minimize failed to converge with message:\n{}".format(opt_res.message) )
+        else:
+            print(opt_res.message)
+
+        return opt_res.x, opt_res.fun, None
+    
+
+    @staticmethod
+    def _fit_OLD(event_counts, like_func, trans_period , penalty = None ):
         """
         
         """
@@ -285,6 +271,130 @@ class Infect_Date_Estimator(object):
                 raise ValueError("sp.optimize.minimize failed to converge with message:\n{}".format(opt_res.message) )
         return opt_res.x, opt_res.fun, least_sq_loss
     
+    @staticmethod
+    def _resample_events( event_series, n = 20 ):
+        day_index = np.array( [ (x-event_series.index[0]).days for x in event_series.index ] )
+        sample_size = int(event_series.sum())
+        resampled = np.random.choice(day_index,
+                                    size= n*sample_size ,
+                                    p = event_series.values / event_series.values.sum()  
+                                    )
+        resampled_df = pd.DataFrame( index = event_series.index, 
+                                    columns = list(range(n)),
+                                data = 0.)
+        for iter_idx in range(n):
+            resampled_tmp = resampled[iter_idx*sample_size: (iter_idx+1)*sample_size]
+            resampled_df.iloc[:,iter_idx] =np.array([ np.sum(resampled_tmp == x) for x in day_index ])
+        return  resampled_df
+
+    @staticmethod
+    def _run_bootstram(event_series, penalties_test, like_func, trans_period, n_boot = 20):
+        like_func_Nzero = np.argmax(like_func > 0.)
+        n_days = len(event_series)
+        p_i_index = event_series.index.shift(-1*like_func_Nzero, freq='D')  ### shift index for infecation dates
+        p_i_from_boot = pd.DataFrame( index = p_i_index, 
+                                    columns = pd.MultiIndex.from_product( [ ["{:.3e}".format(p) for p in penalties_test ], list(range(n_boot)) ] ) ,
+                                    data = 0., 
+                                    dtype = float)
+        losses_from_boot = pd.Series(index = pd.MultiIndex.from_product( [ ["{:.3e}".format(p) for p in penalties_test ], list(range(n_boot)) ] ) ,
+                                    data = 0., 
+                                    dtype = float) 
+        ## Fit to bootstrap samples
+        events_resampled =  Infect_Date_Estimator._resample_events(event_series.copy(), n = n_boot)
+        with progressbar.ProgressBar(max_value=len(penalties_test)*n_boot) as bar:
+            bar_idx = 0
+            for p in penalties_test:
+                for boot_idx in range(n_boot):
+                    p_i_given_obsCas, loss ,least_sq_loss = Infect_Date_Estimator._fit( event_counts =  events_resampled.iloc[:, boot_idx].values.copy(), 
+                                                                                        like_func = like_func,
+                                                                                        penalty = p,
+                                                                                        trans_period= trans_period )
+                    p_i_given_obsCas = pd.Series( index= p_i_index,  data = p_i_given_obsCas)
+                    _, p_i_full ,_ = Infect_Date_Estimator._rescale_p_i(p_i_given_obsCas, like_func, n_days)
+                    p_i_from_boot.loc[: , ("{:.3e}".format(p), boot_idx)] = p_i_full 
+                    losses_from_boot.loc[("{:.3e}".format(p), boot_idx)] = least_sq_loss 
+
+                    bar.update(bar_idx)
+                    bar_idx +=1
+
+        return p_i_from_boot, losses_from_boot
+
+    @staticmethod
+    def _elbow_analysis(fit_error, fit_var, penalties):
+        """
+        fit_error, fit_var, penalties - 1darrays 
+        """
+        sort_idxs = np.argsort(penalties)
+        fit_error = np.copy(fit_error[ sort_idxs ] )
+        fit_var = np.copy(fit_var[ sort_idxs ] )
+        penalties = np.copy(penalties[ sort_idxs ] )
+        
+        d_error_d_var = np.diff(fit_error)/np.diff(fit_var)
+        
+        means_init = np.array([ [d_error_d_var[0]] , [np.mean(d_error_d_var)]  ])
+        precisions_init =  np.array( [  [[1./(np.var(d_error_d_var)*0.5) ]], [[1./(np.var(d_error_d_var)*5.) ]] ] )
+        gmm = GaussianMixture(n_components=2, covariance_type='full', 
+                            means_init=means_init , 
+                            precisions_init = precisions_init ,
+                            ).fit(  d_error_d_var.reshape(-1,1) )
+        gmm_preds = gmm.predict(d_error_d_var.reshape(-1,1) )
+        penalty_best = float(penalties[1 + np.argmax(np.diff(gmm_preds) != 0)  ]  )
+        return penalty_best
+
+    def choose_penalty(self, penalties_test, method = "bootstrap",  **kwargs) :
+        """[summary]
+        
+        Arguments:
+            penalties_test {iterable} -- iterable of floats 
+        
+        Keyword Arguments:
+            n_boot {int} -- [description] (default: {20})
+        
+        Returns:
+            [type] -- [description]
+        """
+        if method.lower()  == "bootstrap":
+            p_i_from_boot, losses_from_boot = self._run_bootstram(self.event_series.copy(), 
+                                                                    penalties_test, 
+                                                                    self.like_func.copy(), 
+                                                                    self.trans_period, **kwargs)
+            self.p_i_from_boot = p_i_from_boot.groupby(axis = 1, level = 0
+                                        ).apply( lambda x: pd.concat([x.mean(axis = 1), x.var(axis = 1)], keys=["mean", "var"]) 
+                                            ).unstack( level = 0)
+            objective_vs_penalty = losses_from_boot.groupby(level = 0).mean()
+            objective_vs_penalty.name = "mean_objective"
+            self.objective_vs_penalty =  objective_vs_penalty.to_frame()
+            self.objective_vs_penalty["var"] =  self.p_i_from_boot.loc[: , (slice(None) , "var") ].sum(axis = 0).droplevel(1)
+
+            self.penalty = self._elbow_analysis(np.sqrt(self.objective_vs_penalty["mean_objective"]).values , 
+                                                 np.sqrt(self.objective_vs_penalty["var"]).values , 
+                                                self.objective_vs_penalty.index.values.astype(float) )
+        
+        return self.penalty 
+
+    def plot_penalty_choice(self, ax = None):
+        if self.objective_vs_penalty is None:
+            raise Exception("Need to run choose penalty method first")
+        if ax is None:
+            fig, ax = plt.subplots(figsize = (12,4))
+        plot_data = self.objective_vs_penalty.copy()
+        plot_data.index = plot_data.index.values.astype(float) 
+        objective_best, var_best =  plot_data.loc[self.penalty, ["mean_objective" , "var"] ]
+
+
+        norm = colors.LogNorm(vmin =  np.min(plot_data.index.values), vmax = np.max(plot_data.index.values) )
+        ax.scatter( [ var_best,],  [objective_best,] , c = self.penalty, s = 200, norm = norm,
+                        edgecolor = "r", linewidth = 5, label = "best")
+        path = ax.scatter( plot_data["var"].values , 
+                           plot_data["mean_objective"].values , 
+                            c =plot_data.index.values , s= 100, norm = norm)
+        ax.legend(loc =1)
+        ax.set_ylabel("Square Error")
+        ax.set_xlabel("Total Variance (from bootstrap)")
+        fig = ax.get_figure()
+        fig.colorbar(path, ax = ax)
+        return ax
+
     def est_transmission_rate(self, min_infected_frac = 0.0001 ):
         """
         infected_counts  - series with values — proportional to number of infected people and index — dates

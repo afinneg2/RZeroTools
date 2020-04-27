@@ -1,7 +1,10 @@
 import numpy as np 
 import pandas as pd 
 from scipy.stats import gamma, lognorm
+import matplotlib.pyplot as plt
 
+######################################################
+### LOAD DATA
 def load_JHU_deaths(f_i = None, agg_by_state = True):
     """Fetch cumulative deaths from JHUs Covid github with optional aggregation by state. Note: this is not number of deaths occuring on each day
     
@@ -57,6 +60,8 @@ def load_state_age_demographic():
     state_ages_coarse = state_ages_coarse.reset_index()
     return state_ages_coarse
 
+
+### PROBABILITY DISTRIBUTIONS
 
 def make_infect_to_death_pmf( params_infect_to_symp = (1.62, 0.42),  params_symp_to_death = (18.8,  0.45), 
                              distrib_infect_to_symp = "lognorm" ,  distrib_symp_to_death = "gamma" ):
@@ -128,3 +133,24 @@ def make_gamma_pmf(mean = 18.8, cv = 0.45, truncate = 3. ):
     pmf  = pmf / pmf.sum() ## normalize following truncation
     return pmf
     
+### PLOTTING
+def plot_shaded(data, figsize = (12,5), **kwargs ):
+    """
+    data - df -- index is x values, 
+                 columns is [mean, upper ,lower]. If columns is multilevel level 0 stores names of different trances
+                        level 1 stores mean, upper, lower
+                 data is y values
+    """
+    
+    fig, ax = plt.subplots(figsize = figsize)
+    
+    if isinstance(data.columns, pd.MultiIndex):
+        for l in data.columns.levels[0]:
+            data.loc[: , (l, "mean")].plot(ax = ax, label = l)
+            x_data = ax.get_lines()[-1].get_xdata()
+            ax.fill_between(x_data,  
+                            data.loc[: , (l, "lower")].values ,
+                            data.loc[: , (l, "upper")].values ,
+                           **kwargs)
+    ax.legend()
+    return fig
