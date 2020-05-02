@@ -33,7 +33,7 @@ class LapDerivative(pm.Continuous):
         return t_out
 
 class Infect_Date_Estimator(object):
-    def __init__(self, event_series, like_func, trans_period = (1,8)  ):
+    def __init__(self, event_series, like_func, policy_dates, trans_period = (1,8)  ):
         """
         event_series -  index is of type datetime64[ns]
         like_func - pmf for likelihood of event (death/hospitalization) as function of days after infection
@@ -43,6 +43,8 @@ class Infect_Date_Estimator(object):
         self.date_earliest = self.event_series.index[0]
         self.date_latest = self.event_series.index[-1]
         self.n_days = (self.date_latest - self.date_earliest).days + 1
+        policy_dates_processed = self._preprocess_policy_dates(policy_dates)
+        self.policy_dates = [ ( (x[0]-self.date_earliest).days, (x[1]-self.date_earliest).days) for x in  policy_dates_processed  ]
         
         self.like_func = like_func
         self._like_func_Nzero = np.argmax(like_func > 0.)
@@ -68,7 +70,10 @@ class Infect_Date_Estimator(object):
         return M1, M2
     @property 
     def D1(self):
-        D1 = Infect_Date_Estimator._make_d1_mat( self.n_days-(self.trans_period[1] -1) )
+        D1 = Infect_Date_Estimator._make_d1_mat(n_days = self.n_days,
+                                                like_func=self.like_func,
+                                                trans_period = self.trans_period,
+                                                 policy_dates= self.policy_dates )
         return D1
     @property
     def N_i_obsCas_expected(self):
@@ -81,6 +86,23 @@ class Infect_Date_Estimator(object):
     def samples_Ro(self):
         _ , samples_Ro = self._est_Ro( infected_counts = self.samples_p_i.copy(), trans_period = self.trans_period, min_infected_frac =0.0001)
         return samples_Ro
+    
+    @staticmethod
+    def _preprocess_policy_dates(policy_dates):
+        out = []
+        for elem in policy_dates:
+            if isinstance(elem, str):
+                out.append( ( pd.Timestamp(elem), pd.Timestamp(elem) + timedelta(days=1) ) )
+            elif isintance(elem, tuple) or isintance(elem, list):
+                if len(elem) == 1:
+                    out.append( ( pd.Timestamp(elem[0]), pd.Timestamp(elem[0]) + timedelta(days=1) ) )
+                elif len(elem) == 2:
+                    out.append( tuple( pd.Timestamp(x) for x in elem ) )
+                else:
+                    raise ValueError("At least one of the entries of policy_dates has length > 2!")
+            else:
+                raise ValueError("Could not parse entry {} of policy_dates".format(elem ))
+        return out
 
     @staticmethod
     def _preprocess_event_series(event_series, like_func):
@@ -112,12 +134,14 @@ class Infect_Date_Estimator(object):
             raise ValueError()
         return out
 
-    def est_infect_dates(self, smooth_penalty =None , **kwargs_pm_sample ): 
+    def est_infect_dates(self, smooth_penalty, flex_factor=0.01, **kwargs_pm_sample ): 
 
         p_i_given_obsCas, self.posterior_samples = self._sample_posterior( event_counts = self.event_series.values.copy(), 
                                                                             like_func = self.like_func,
-                                                                            penalty = smooth_penalty,
                                                                             trans_period= self.trans_period,
+                                                                            policy_dates = self.policy_dates,
+                                                                            penalty = smooth_penalty,
+                                                                            flex_factor = flex_factor ,
                                                                             **kwargs_pm_sample )
         ## Organize results
         p_i_index = self.event_series.index.shift(-1*self._like_func_Nzero, freq='D')  ### shift index for infecation dates
@@ -215,14 +239,18 @@ class Infect_Date_Estimator(object):
         return cond_probs
 
     @staticmethod
-    def _sample_posterior( event_counts, like_func, trans_period , penalty, **kwargs ):
+    def _sample_posterior(event_counts, like_func, trans_period, policy_dates, penalty, flex_factor, **kwargs ):
         n_days = len(event_counts)
         cond_probs = Infect_Date_Estimator._make_cond_prob_mat(like_func, n_days)
         
         A = cond_probs.copy()
         b=  event_counts.copy()
         M1 ,M2 = Infect_Date_Estimator._make_log_penalty_mats(n_days, window_size=trans_period[1]-1, like_func = like_func)
-        D = Infect_Date_Estimator._make_d1_mat( n_days-(trans_period[1] -1) )
+        D = Infect_Date_Estimator._make_d1_mat( n_days = n_days, 
+                                                like_func= like_func,
+                                                policy_dates = policy_dates,
+                                                trans_period= trans_period, 
+                                                flex_factor= flex_factor )
 
         with pm.Model() as model:
             theta = LapDerivative("theta",
@@ -250,7 +278,7 @@ class Infect_Date_Estimator(object):
         A = cond_probs.copy()
         b=  event_counts
         M1 ,M2 = Infect_Date_Estimator._make_log_penalty_mats(n_days, window_size=trans_period[1]-1, like_func = like_func)
-        D = Infect_Date_Estimator._make_d1_mat( n_days-(trans_period[1] -1) )
+        D = Infect_Date_Estimator._make_d1_mat( n_days, like_func = like_func, trans_period = trans_period )
 
         p_count = 0.00005
         def obj_func(x, A, b, M1, M2, D, penalty):
@@ -321,11 +349,19 @@ class Infect_Date_Estimator(object):
                  d2[i,i:i+3] = [1.,-2.,1.]
         return d2
 
-    @staticmethod 
-    def _make_d1_mat(size):
+    @staticmethod
+    def _make_d1_mat(n_days, like_func, trans_period, policy_dates = [], flex_factor = 0.01):
+        size = n_days-(trans_period[1] -1)
+        shift = np.argmax(like_func>0.) - (trans_period[1]-1) -1  ## shift accounts for: date shift due to 0 probs at 
+                                                            ## start of liklihood function, full transmission period must elapse before 
+                                                        ## calculating transmission rates, and -1 to select the row comparing the preceeding
+                                                        ## date with date of interest
+        p_dates = [ (x[0] + shift , x[1] + shift) for x in policy_dates ]
         d1 = np.zeros((size-1,size), dtype = float)
         for i in range(0,size-1):
             d1[i,i:i+2] = [-1., 1.]
+        for start, stop in  p_dates:
+            d1[ start: stop, :  ] *= flex_factor
         return d1
 
     def est_total_infect_by_day(self, age_group_data):
