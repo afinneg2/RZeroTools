@@ -161,7 +161,7 @@ def plot_shaded(data, figsize = (12,5), **kwargs ):
     return fig
 
 class Policy_Stats(object):
-    """Class for relating changes in policy to changes in statictics of samples fromt the posterior
+    """Class for relating changes in policy to changes in statictics of samples from the posterior
     distribution that are calcuatled over time intervals before and after the change. 
     """
     def __init__(self, policy_dates, max_before =7, max_after = 7):
@@ -353,7 +353,7 @@ class Policy_Stats(object):
             return s
         def plot_func(data, y, color):
             policies_and_dates = data[["policy", "policy_date"]].drop_duplicates().sort_values(by = "policy_date").reset_index(drop =True)
-            ax = sns.boxplot(data = data, x = "policy" , y = y, order = list(policies_and_dates["policy"].values))
+            ax = sns.boxplot(data = data, x = "policy" , y = y, order = list(policies_and_dates["policy"].values),  whis=[5, 95])
             ax.set_xticklabels([format_xlab(t, width = 20) for t in policies_and_dates["policy"].values] , rotation = 90)
             return None
         ####### PLOT
@@ -361,14 +361,14 @@ class Policy_Stats(object):
         g = sns.FacetGrid(change_samples, row="state/province", aspect= aspect, height = height,sharex=False, )
         g.map_dataframe(plot_func, y = "value")
         for ax in np.ravel(g.axes):
-            ax.set_ylabel("Percent change in " + r'$R_o$')
+            ax.set_ylabel("Percent change in " + r'$R_e$')
             ax.set_ylim(None, 50)
             ax.grid(True)
         g.fig.subplots_adjust(hspace=hspace)
         return g.fig
     
     def boxplot_changes_by_policy(self, states = None, policies = None,  change_samples = None,
-                                  y_label = "Percent change in " + r'$R_o$', aspect = 4, height = 6,y_lim = (-100, 100),
+                                  y_label = "Percent change in " + r'$R_e$', aspect = 4, height = 6,y_lim = (-100, 100),
                                  hspace = 3.2 ):
         ####### Process inputs
         if change_samples is None:
@@ -400,7 +400,7 @@ class Policy_Stats(object):
             plot_data = plot_data.drop(columns = ["state/province" , "policy" , "policy_date"])
             plot_data = plot_data.set_index("state/province_and_policy", verify_integrity=True)
             plot_data = plot_data.transpose().melt()
-            ax = sns.boxplot(data = plot_data , x =  "state/province_and_policy" , y = "value", ax= ax)
+            ax = sns.boxplot(data = plot_data , x =  "state/province_and_policy" , y = "value", ax= ax, whis=[5, 95])
             ax.set_xticklabels( [format_xlab(x.get_text()) for x in  ax.get_xticklabels()], rotation = 90)
             ax.set_ylim( y_lim )
             ax.set_ylabel(y_label)

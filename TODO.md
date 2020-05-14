@@ -1,9 +1,9 @@
 ## TODO
 
-- [ ] Allow weak penality on dates of policy change
+- [x] Allow weak penality on dates of policy change
 - [ ] State specific selection of best penalty param
 
-- [ ] Good visual representatation of time-intervals used for caculating change in $R_o$
+- [ ] Good visual representatation of time-intervals used for calculating change in $R_o$
 
 - [ ] Fix pymc3 multicore issues when calling from notebook
 

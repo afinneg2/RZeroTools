@@ -1,2 +1,2 @@
-import RoZeroTools.infection_estimator
+import RoZeroTools.infection_series_estimator
 import RoZeroTools.ro_utils
