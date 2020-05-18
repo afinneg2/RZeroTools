@@ -2,7 +2,8 @@
 
 ### Description
 
-Code for Bayesian estimation of infection time series and reproduction numbers from pandemic casualty data.
+Code for Bayesian estimation of infection time series and reproduction numbers from pandemic casualty data. See <a href="https://afinneg2.github.io/blog/2020/05/14/bayes_estimating_COVID_reproduction_number"> this pa
+ge </a> for description of model.
 
 ### Installation
 
